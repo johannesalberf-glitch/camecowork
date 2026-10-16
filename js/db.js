@@ -87,7 +87,10 @@
       return rpc('admin_check', { p_passkey: pass });
     };
     self.adminList = function (pass) {
-      return rpc('admin_list_candidates', { p_passkey: pass }).then(function (d) { return (d && d.candidates) || []; });
+      return rpc('admin_list_candidates', { p_passkey: pass }).then(function (d) {
+        if (Array.isArray(d)) return d;
+        return (d && d.candidates) || [];
+      });
     };
     self.adminSave = function (pass, payload) {
       var args = {
