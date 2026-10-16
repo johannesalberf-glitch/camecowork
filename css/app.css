@@ -1,0 +1,156 @@
+/* ============================================================================
+ * css/app.css — custom styles that complement Tailwind (Play CDN).
+ * Kept small and webview-safe; all layout-critical rules inline here so the
+ * page still renders acceptably if the Tailwind CDN is slow or blocked.
+ * ==========================================================================*/
+
+/* ---------------------------------------------------------------- basics */
+:root {
+  --vh: 1vh;                 /* live viewport unit, maintained by js/utils.js */
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+body {
+  min-height: calc(var(--vh, 1vh) * 100);
+  overscroll-behavior-y: contain;   /* tame pull-to-refresh reloads in webviews */
+}
+
+/* Use the dynamic unit when the browser supports it (Telegram/Safari fix). */
+@supports (height: 100dvh) {
+  body, .min-h-safe { min-height: 100dvh; }
+}
+.min-h-safe { min-height: calc(var(--vh, 1vh) * 100); }
+
+/* Respect notches / gesture bars without breaking older browsers. */
+.pt-safe { padding-top: calc(0.75rem + var(--safe-top)); }
+.pb-safe { padding-bottom: calc(0.75rem + var(--safe-bottom)); }
+
+/* Kill the 300ms tap delay + grey flash on iOS webviews. */
+button, a, input, select, textarea, [role="button"] {
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Focus visibility that survives Tailwind resets. */
+:focus-visible { outline: 2px solid #C8102E; outline-offset: 2px; }
+
+/* ---------------------------------------------------------- OTP input */
+/* Numeric keypad on every mobile platform, monospaced digits, spacing that
+ * reads like six separate boxes without the fragility of six inputs. */
+.otp-input {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.45em;
+  padding-left: 0.45em;          /* compensates trailing letter-spacing */
+  text-align: center;
+  font-size: 1.75rem;
+  line-height: 1;
+  caret-color: #C8102E;
+}
+@media (min-width: 640px) {
+  .otp-input { font-size: 2rem; letter-spacing: 0.55em; padding-left: 0.55em; }
+}
+.otp-input::-webkit-outer-spin-button,
+.otp-input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.otp-input::placeholder { letter-spacing: 0.45em; color: #cbd5e1; }
+
+/* ------------------------------------------------------------ ID card */
+.id-card {
+  /* Solid palette + borders only (no blend modes / backdrop filters) so the
+   * html2canvas export is pixel-faithful across engines. */
+  color: #1e293b;
+  box-shadow: 0 24px 48px -24px rgba(15, 23, 42, 0.45);
+}
+
+/* Decorative barcode — bars are <i> elements with inline widths. */
+.barcode {
+  display: flex;
+  align-items: stretch;
+  height: 34px;
+  overflow: hidden;
+}
+.barcode i {
+  display: block;
+  background: #0f172a;
+  height: 100%;
+  flex: 0 0 auto;
+}
+
+/* Rotated ink-stamp look for the authorization block. */
+.stamp {
+  border: 2px solid rgba(200, 16, 46, 0.55);
+  color: rgba(200, 16, 46, 0.75);
+  border-radius: 8px;
+  padding: 3px 8px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  transform: rotate(-3deg);
+}
+
+/* -------------------------------------------------------------- toasts */
+#toast-host {
+  position: fixed;
+  left: 0; right: 0;
+  bottom: calc(1rem + var(--safe-bottom));
+  display: flex;
+  justify-content: center;
+  z-index: 90;
+  pointer-events: none;
+  padding: 0 0.75rem;
+}
+#toast-host > div { animation: toast-in 0.18s ease-out; }
+@keyframes toast-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* Soft entrance for the verified card and admin panels. */
+.rise-in { animation: rise-in 0.28s ease-out both; }
+@keyframes rise-in {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* Respect users who prefer reduced motion. */
+@media (prefers-reduced-motion: reduce) {
+  .rise-in, #toast-host > div { animation: none !important; }
+  html { scroll-behavior: auto !important; }
+}
+
+/* ---------------------------------------------------------------- print */
+@media print {
+  body { background: #ffffff !important; }
+  #net-banner, #cfg-banner, header, #view-verify > footer,
+  #card-actions, #verify-form, #hero-copy, #trust-strip, #admin-anything { display: none !important; }
+  #card-section { display: block !important; padding: 0 !important; }
+  #id-card { box-shadow: none !important; border: 1px solid #cbd5e1; }
+}
+
+/* ------------------------------------------------------------- utilities */
+.no-scrollbar::-webkit-scrollbar { display: none; }
+.no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+
+/* Webkit autofill: keep inputs light even when the webview forces dark UI. */
+input:-webkit-autofill,
+input:-webkit-autofill:hover,
+input:-webkit-autofill:focus {
+  -webkit-box-shadow: 0 0 0 1000px #ffffff inset;
+  -webkit-text-fill-color: #0f172a;
+  transition: background-color 9999s ease-in-out 0s;
+}
+
+/* ------------------------------------------------------------ iOS mobile */
+/* iOS Safari zooms the entire page when a focused form field renders below
+ * 16px, which makes the page jump around inside Telegram/WhatsApp webviews.
+ * Field text is therefore 16px on small screens (the OTP box keeps its large
+ * size). */
+@media (max-width: 640px) {
+  input:not(.otp-input):not([type="checkbox"]):not([type="radio"]),
+  select,
+  textarea {
+    font-size: 16px !important;
+  }
+}

@@ -1,0 +1,3 @@
+/* /admin  →  /index.html   (status 200 = rewrite, not redirect) */
+/admin    /index.html   200
+/admin/   /index.html   200

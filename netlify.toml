@@ -1,0 +1,19 @@
+# Netlify: rewrite /admin (and any sub-path) to index.html so the SPA route works.
+# Deploy setting: publish directory = repository root (no build command needed).
+
+[[redirects]]
+  from = "/admin"
+  to = "/index.html"
+  status = 200
+
+[[redirects]]
+  from = "/admin/*"
+  to = "/index.html"
+  status = 200
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+    Permissions-Policy = "camera=(), microphone=(), geolocation=()"

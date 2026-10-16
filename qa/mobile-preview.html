@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mobile viewport QA — Cameco</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #0b1220; color: #cbd5e1; font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  #bar { position: sticky; top: 0; z-index: 5; display: flex; gap: 10px; align-items: center; padding: 10px 16px; background: #111a2e; border-bottom: 1px solid #26324e; flex-wrap: wrap; }
+  #bar b { color: #f8fafc; }
+  a.pill { padding: 4px 10px; border: 1px solid #334155; border-radius: 999px; color: #cbd5e1; text-decoration: none; }
+  a.pill.on { background: #1d4ed8; border-color: #1d4ed8; color: #fff; }
+  #stage { display: flex; gap: 28px; padding: 24px; align-items: flex-start; flex-wrap: wrap; }
+  .phone { flex: 0 0 auto; }
+  .phone .cap { margin: 0 0 6px; color: #93c5fd; }
+  .phone .shell { border: 10px solid #05070d; border-radius: 36px; overflow: hidden; background: #fff; box-shadow: 0 18px 50px rgba(0,0,0,.55); }
+  iframe { display: block; border: 0; background: #fff; }
+  #report { position: sticky; top: 60px; flex: 1 1 320px; max-width: 620px; padding: 14px 16px; background: #111a2e; border: 1px solid #26324e; border-radius: 12px; white-space: pre-wrap; margin: 0; }
+  .ok { color: #4ade80; } .bad { color: #f87171; }
+</style>
+</head>
+<body>
+<div id="bar">
+  <b>Mobile QA</b>
+  <span id="widths"></span>
+  <span style="margin-left:auto">src: <span id="src-label"></span></span>
+</div>
+<div id="stage">
+  <div class="phone">
+    <p class="cap" id="cap"></p>
+    <div class="shell"><iframe id="frame" title="app under test"></iframe></div>
+  </div>
+  <pre id="report">loading…</pre>
+</div>
+<script>
+(function () {
+  var qs = new URLSearchParams(location.search);
+  var w = Math.max(200, Math.min(600, parseInt(qs.get('w') || '360', 10) || 360));
+  var h = Math.max(300, Math.min(1400, parseInt(qs.get('h') || '780', 10) || 780));
+  var src = qs.get('src') || '/index.html';
+  var cap = qs.get('cap') || '';
+
+  var frame = document.getElementById('frame');
+  frame.width = w;
+  frame.height = h;
+  frame.setAttribute('src', src);
+  document.getElementById('cap').textContent = (cap ? cap + ' — ' : '') + w + ' × ' + h + ' px';
+  document.getElementById('src-label').textContent = src;
+  document.getElementById('widths').innerHTML = [320, 360, 390, 412].map(function (x) {
+    return '<a class="pill' + (x === w ? ' on' : '') + '" href="?w=' + x + '&h=' + h + '&src=' + encodeURIComponent(src) + '&cap=' + encodeURIComponent(cap) + '">' + x + '</a>';
+  }).join(' ');
+
+  function doc() { try { return frame.contentDocument; } catch (e) { return null; } }
+
+  function cssPath(el) {
+    var parts = [], n = el, depth = 0;
+    while (n && n.nodeType === 1 && depth < 4) {
+      var s = n.tagName.toLowerCase();
+      if (n.id) { parts.unshift(s + '#' + n.id); break; }
+      if (n.className && typeof n.className === 'string') {
+        var c = n.className.trim().split(/\s+/).slice(0, 2).join('.');
+        if (c) s += '.' + c;
+      }
+      parts.unshift(s);
+      n = n.parentElement; depth++;
+    }
+    return parts.join('>');
+  }
+
+  /* Element is fine if some scrolling/clipping ancestor keeps it in bounds. */
+  function containedInClipper(el, d, max) {
+    var n = el.parentElement, hops = 0, win = d.defaultView;
+    while (n && n.nodeType === 1 && hops < 25) {
+      var cs = win.getComputedStyle(n);
+      if (/(auto|scroll|hidden|clip)/.test(cs.overflowX)) {
+        var r2 = n.getBoundingClientRect();
+        if (r2.right <= max + 1 && r2.left >= -1) return true;
+      }
+      n = n.parentElement; hops++;
+    }
+    return false;
+  }
+
+  /* window.qa is the automation surface: evaluate against it from the parent tab. */
+  window.qa = {
+    w: w, h: h, src: src,
+    doc: doc,
+    win: function () { return frame.contentWindow; },
+    report: function () {
+      var d = doc();
+      if (!d || !d.documentElement) return { error: 'iframe not ready' };
+      var de = d.documentElement;
+      var max = de.clientWidth;
+      var out = {
+        width: w, height: h,
+        scrollWidth: de.scrollWidth, clientWidth: de.clientWidth,
+        docOverflowX: de.scrollWidth - de.clientWidth,
+        offenders: [], offenderCount: 0
+      };
+      var all = d.querySelectorAll('body *');
+      for (var i = 0; i < all.length; i++) {
+        var el = all[i];
+        var r = el.getBoundingClientRect();
+        if (r.width < 1 || r.height < 1) continue;
+        if (r.right <= max + 1 && r.left >= -1) continue;
+        if (containedInClipper(el, d, max)) continue;
+        out.offenders.push({ sel: cssPath(el), left: Math.round(r.left), right: Math.round(r.right) });
+      }
+      out.offenderCount = out.offenders.length;
+      out.offenders.sort(function (a, b) { return b.right - a.right; });
+      out.offenders = out.offenders.slice(0, 10);
+      return out;
+    },
+    text: function () {
+      var r = window.qa.report();
+      if (r.error) return 'ERROR: ' + r.error;
+      var lines = ['viewport ' + r.width + 'x' + r.height +
+        ' | scrollW ' + r.scrollWidth + ' clientW ' + r.clientWidth +
+        ' | overflowX ' + r.docOverflowX + (r.docOverflowX > 0 ? ' OVERFLOW!' : ' ok')];
+      lines.push('edge offenders: ' + r.offenderCount);
+      r.offenders.forEach(function (o) { lines.push('   ' + o.sel + ' [' + o.left + ' -> ' + o.right + ']'); });
+      return lines.join('\n');
+    },
+    /* unfiltered: every element box past the viewport edge, no clipper exemption */
+    raw: function (limit) {
+      var d = doc();
+      if (!d || !d.documentElement) return 'iframe not ready';
+      var max = d.documentElement.clientWidth;
+      var out = [], all = d.querySelectorAll('body *');
+      for (var i = 0; i < all.length; i++) {
+        var el = all[i], r = el.getBoundingClientRect();
+        if (r.width < 1 || r.height < 1) continue;
+        if (r.right <= max + 1 && r.left >= -1) continue;
+        var path = [], n = el, depth = 0;
+        while (n && n.nodeType === 1 && depth < 5) {
+          var s = n.tagName.toLowerCase() + (n.id ? '#' + n.id : '') +
+            (n.className && typeof n.className === 'string' ? '.' + n.className.trim().split(/\s+/).slice(0, 3).join('.') : '');
+          path.unshift(s); n = n.parentElement; depth++;
+        }
+        out.push(path.join('>') + '  [' + Math.round(r.left) + ' -> ' + Math.round(r.right) + ']  "' +
+          (el.children.length ? '…' : (el.textContent || '').trim().slice(0, 40)) + '"');
+      }
+      return out.slice(0, limit || 25).join('\n') || '(nothing past the edge)';
+    }
+  };
+
+  function render() {
+    var t = document.getElementById('report');
+    var r = window.qa.report();
+    if (r.error) { t.textContent = 'ERROR: ' + r.error; return; }
+    var lines = [];
+    lines.push('<span class="' + (r.docOverflowX > 0 ? 'bad' : 'ok') + '">viewport ' + r.width + '×' + r.height + '</span>');
+    lines.push('documentElement scrollWidth ' + r.scrollWidth + ' / clientWidth ' + r.clientWidth +
+      (r.docOverflowX > 0 ? ' \u2014 OVERFLOW ' + r.docOverflowX + 'px' : ' \u2713 no horizontal overflow'));
+    lines.push('elements past the viewport edge: ' + r.offenderCount);
+    r.offenders.slice(0, 8).forEach(function (o) { lines.push('  ' + o.sel + ' [' + o.left + ' \u2192 ' + o.right + ']'); });
+    t.innerHTML = lines.join('\n');
+  }
+
+  /* Real phones use overlay scrollbars; hide the desktop scrollbar so the
+     layout width equals the frame width (what a phone would see). */
+  function killScrollbars() {
+    var d = doc();
+    if (!d || !d.head || d.getElementById('qa-kill-scrollbars')) return;
+    var st = d.createElement('style');
+    st.id = 'qa-kill-scrollbars';
+    st.textContent = 'html{scrollbar-width:none!important}html::-webkit-scrollbar,body::-webkit-scrollbar,*::-webkit-scrollbar{width:0!important;height:0!important;display:none!important}';
+    d.head.appendChild(st);
+  }
+
+  frame.addEventListener('load', function () { killScrollbars(); setTimeout(render, 400); });
+  setInterval(render, 2000);
+})();
+</script>
+</body>
+</html>
