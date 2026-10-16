@@ -2,17 +2,17 @@
 
 **Project:** Cameco Careers Inc. — Credential Verification Portal
 A zero-build, static web app (HTML + vanilla JS + Tailwind) backed by Supabase.
-Live site: `https://johannesalberf-glitch.github.io/cameco-verification-portal/`
-Admin: `https://johannesalberf-glitch.github.io/cameco-verification-portal/?admin=1` (passkey `admin2026` until you change it)
-Repo: `https://github.com/johannesalberf-glitch/cameco-verification-portal`
+Live site: `https://johannesalberf-glitch.github.io/camecowork/`
+Admin: `https://johannesalberf-glitch.github.io/camecowork/?admin=1` (passkey `admin2026` until you change it)
+Repo: `https://github.com/johannesalberf-glitch/camecowork`
 
 ---
 
 ## A. Clone the existing project (fastest — everything already works)
 
 ```bash
-git clone https://github.com/johannesalberf-glitch/cameco-verification-portal.git
-cd cameco-verification-portal
+git clone https://github.com/johannesalberf-glitch/camecowork.git
+cd camecowork
 python3 -m http.server 8080     # → http://localhost:8080  (admin: ?admin=1)
 ```
 
@@ -220,7 +220,7 @@ attempts counted with a 15-minute lockout; OTPs stored hashed for attempts log
 
 1. Create the project, then in the SQL editor run the full contents of
    `supabase/schema.sql` from the repo
-   (raw: `https://raw.githubusercontent.com/johannesalberf-glitch/cameco-verification-portal/main/supabase/schema.sql`).
+   (raw: `https://raw.githubusercontent.com/johannesalberf-glitch/camecowork/main/supabase/schema.sql`).
 2. Copy the **Project URL** + **anon / `sb_publishable_…`** key into `js/config.js` (static version)
    or into the Lovable env vars.
 3. Log into the admin portal and change the default passkey `admin2026` immediately.
