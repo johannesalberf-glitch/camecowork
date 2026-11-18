@@ -1,15 +1,18 @@
 /* ============================================================================
  * js/db.js — Resilient GitHub Cloud + Offline-First Local Storage data layer.
  *
- * Eliminates Supabase completely so the portal NEVER pauses after 7 days and
- * NEVER shows "Verification service unreachable (TypeError: Failed to fetch)".
+ * Eliminates Supabase completely so the portal NEVER pauses and NEVER shows
+ * "Verification service unreachable (TypeError: Failed to fetch)".
  *
  * Architecture:
- *   1. GitHub Cloud Store (Secret Gist via api.github.com) — 100% uptime,
- *      instant cross-device sync for Admin CRUD and Public OTP verification.
- *   2. Persistent Local Storage (localStorage) — caches the store so the
+ *   1. Built-in Seed Store (data/candidates.json) — bundled directly on
+ *      GitHub Pages with all recovered Supabase records + photos.
+ *   2. GitHub Cloud Store (Secret Gist via api.github.com + raw_url support
+ *      for large photo payloads) — 100% uptime, instant cross-device sync
+ *      for Admin CRUD and Public OTP verification.
+ *   3. Persistent Local Storage (localStorage) — caches the store so the
  *      portal works 100% offline and loads in <5ms.
- *   3. Signed Deep-Link Payload (?code=123456&c=...) — allows shared links
+ *   4. Signed Deep-Link Payload (?code=123456&c=...) — allows shared links
  *      to verify candidates immediately even if the visitor is offline.
  * ==========================================================================*/
 (function () {
@@ -19,41 +22,8 @@
   var U = CCO.U;
   var CFG = window.CCO_CONFIG || {};
 
-  var STORAGE_KEY = 'cco_cloud_store_v2';
+  var STORAGE_KEY = 'cco_cloud_store_v3';
   var BC_NAME = (CFG.REALTIME && CFG.REALTIME.CHANNEL) || 'cco-admin-sync';
-
-  function defaultCandidates() {
-    var today = U.isoToday();
-    return [
-      {
-        id: 'cco-1001', employee_id: 'CCO-2026-01001', name: 'Amara N. Okafor',
-        passport: 'A20943771', role: 'Registered Nurse (ICU)', otp: '482913',
-        work_name: 'Registered Nurse — ICU Placement', work_type: 'Permanent Full-Time',
-        sex: 'Female', phone: '+1 416 555 0134',
-        photo_url: U.avatarDataUri('Amara Okafor'), issue_date: '2026-02-10',
-        expiry_date: U.addYearsIso(today, 1), status: 'active',
-        created_at: new Date(Date.now() - 864e5 * 40).toISOString()
-      },
-      {
-        id: 'cco-1002', employee_id: 'CCO-2025-00842', name: 'Daniel F. Moreau',
-        passport: 'J8841207', role: 'Journeyman Welder (CWB)', otp: '619204',
-        work_name: 'Journeyman Welder — CWB Certified', work_type: 'Fixed-Term Full-Time',
-        sex: 'Male', phone: '+1 647 555 0188',
-        photo_url: U.avatarDataUri('Daniel Moreau'), issue_date: '2026-06-30',
-        expiry_date: U.addYearsIso(today, 1), status: 'active',
-        created_at: new Date(Date.now() - 864e5 * 210).toISOString()
-      },
-      {
-        id: 'cco-1003', employee_id: 'CCO-2026-01002', name: 'Sofia P. Reyes',
-        passport: 'P7743118', role: 'Red Seal Line Cook', otp: '377915',
-        work_name: 'Red Seal Line Cook', work_type: 'Seasonal',
-        sex: 'Female', phone: '+1 437 555 0102',
-        photo_url: U.avatarDataUri('Sofia Reyes'), issue_date: '2026-08-01',
-        expiry_date: U.addYearsIso(today, 1), status: 'active',
-        created_at: new Date(Date.now() - 864e5 * 8).toISOString()
-      }
-    ];
-  }
 
   function unlockGitHubToken() {
     try {
@@ -109,23 +79,25 @@
     var state = {
       version: 1,
       passkey: 'admin2026',
-      seq: 1004,
+      seq: 1025,
       updated_at: '2026-01-01T00:00:00.000Z',
-      candidates: defaultCandidates()
+      candidates: []
     };
 
     function loadLocal() {
       try {
         var raw = window.localStorage.getItem(STORAGE_KEY);
-        if (!raw) return;
+        if (!raw) return false;
         var parsed = JSON.parse(raw);
-        if (parsed && Array.isArray(parsed.candidates)) {
+        if (parsed && Array.isArray(parsed.candidates) && parsed.candidates.length > 0) {
           state.passkey = parsed.passkey || 'admin2026';
-          state.seq = parsed.seq || 1004;
+          state.seq = Math.max(1025, parsed.seq || 1025);
           state.updated_at = parsed.updated_at || state.updated_at;
           state.candidates = parsed.candidates.map(normalizeRow).filter(Boolean);
+          return true;
         }
       } catch (e) { /* storage unavailable in private webview */ }
+      return false;
     }
 
     function saveLocal() {
@@ -134,20 +106,73 @@
       } catch (e) { /* ignore quota / private mode */ }
     }
 
-    function applyCloudState(remote) {
+    function mergeCandidates(existing, incoming) {
+      var map = {};
+      var order = [];
+      /* Prefer incoming (newer) records, but preserve any local-only records by id/otp */
+      (incoming || []).forEach(function (r) {
+        var n = normalizeRow(r);
+        if (!n) return;
+        var key = n.id || n.otp;
+        if (!map[key]) order.push(key);
+        map[key] = n;
+      });
+      (existing || []).forEach(function (r) {
+        var n = normalizeRow(r);
+        if (!n) return;
+        var key = n.id || n.otp;
+        /* Also check if OTP already exists in incoming */
+        var otpExists = order.some(function (k) { return map[k] && map[k].otp === n.otp; });
+        if (!map[key] && !otpExists) {
+          order.push(key);
+          map[key] = n;
+        }
+      });
+      return order.map(function (k) { return map[k]; });
+    }
+
+    function applyCloudState(remote, isFullReplace) {
       if (!remote || !Array.isArray(remote.candidates)) return false;
       state.passkey = remote.passkey || state.passkey || 'admin2026';
-      state.seq = Math.max(state.seq || 1004, remote.seq || 1004);
+      state.seq = Math.max(state.seq || 1025, remote.seq || 1025);
       state.updated_at = remote.updated_at || new Date().toISOString();
-      state.candidates = remote.candidates.map(normalizeRow).filter(Boolean);
+      if (isFullReplace) {
+        state.candidates = remote.candidates.map(normalizeRow).filter(Boolean);
+      } else {
+        state.candidates = mergeCandidates(state.candidates, remote.candidates);
+      }
       saveLocal();
       return true;
+    }
+
+    function loadBundledSeed() {
+      return U.withTimeout(
+        fetch('data/candidates.json?v=20261118b', { cache: 'no-cache' })
+          .then(function (res) {
+            if (!res.ok) throw new Error('HTTP ' + res.status);
+            return res.json();
+          })
+          .then(function (seed) {
+            if (seed && Array.isArray(seed.candidates)) {
+              if (!state.candidates.length) {
+                applyCloudState(seed, true);
+              } else {
+                state.candidates = mergeCandidates(state.candidates, seed.candidates);
+                saveLocal();
+              }
+              return true;
+            }
+            return false;
+          }),
+        8000,
+        'Seed load'
+      ).catch(function () { return false; });
     }
 
     function pullFromGitHub() {
       var gistId = CFG.GITHUB_GIST_ID;
       var fileName = CFG.GITHUB_GIST_FILE || 'cameco-store.json';
-      if (!gistId) return Promise.resolve(false);
+      if (!gistId) return loadBundledSeed();
 
       var headers = { 'Accept': 'application/vnd.github+json' };
       var tok = unlockGitHubToken();
@@ -163,21 +188,30 @@
           return res.json();
         }).then(function (gist) {
           var fileObj = gist && gist.files && gist.files[fileName];
-          if (!fileObj || !fileObj.content) return false;
-          var parsed = JSON.parse(fileObj.content);
-          /* Only overwrite local state if remote is newer or local was never written */
-          if (!state.updated_at || !parsed.updated_at || parsed.updated_at >= state.updated_at) {
-            applyCloudState(parsed);
-          }
-          self.health = { state: 'online', detail: 'github-cloud' };
-          return true;
+          if (!fileObj) throw new Error('Missing gist file');
+
+          /* When the store has many embedded base64 photos (>300 KB), GitHub
+           * sets fileObj.truncated = true and serves the full JSON at raw_url. */
+          var contentPromise = (fileObj.truncated && fileObj.raw_url)
+            ? fetch(fileObj.raw_url, { cache: 'no-store' }).then(function (r) { return r.text(); })
+            : Promise.resolve(fileObj.content || '');
+
+          return contentPromise.then(function (rawText) {
+            if (!rawText) return false;
+            var parsed = JSON.parse(rawText);
+            if (!state.updated_at || !parsed.updated_at || parsed.updated_at >= state.updated_at || state.candidates.length === 0) {
+              applyCloudState(parsed, true);
+            }
+            self.health = { state: 'online', detail: 'github-cloud' };
+            return true;
+          });
         }),
-        8000,
+        10000,
         'Cloud sync'
       ).catch(function () {
-        /* Silent fallback to cached localStorage state so user never sees an error */
+        /* Fallback to bundled data/candidates.json on GitHub Pages */
         self.health = { state: 'online', detail: 'local-cache' };
-        return false;
+        return loadBundledSeed();
       });
     }
 
@@ -213,7 +247,7 @@
         }).then(function (res) {
           return res.ok;
         }),
-        10000,
+        12000,
         'Cloud save'
       ).catch(function () {
         return false;
@@ -221,8 +255,10 @@
     }
 
     loadLocal();
-    /* Start initial background sync immediately */
-    var initialSync = pullFromGitHub();
+    /* Load bundled seed + cloud sync immediately */
+    var initialSync = loadBundledSeed().then(function () {
+      return pullFromGitHub();
+    });
 
     function emit() {
       listeners.forEach(function (cb) { try { cb(); } catch (e) {} });
@@ -266,7 +302,6 @@
       verifyFails[dev] = clean(verifyFails[dev], 10 * 60e3);
       if (verifyFails[dev].length >= 25) return Promise.resolve({ status: 'rate_limited' });
 
-      /* Sync latest from GitHub Cloud first (fast timeout), then check local store + URL token */
       return pullFromGitHub().then(function () {
         var row = findByOtp(code);
 
@@ -296,7 +331,6 @@
         throw U.appError('rate_limited', 'Too many failed attempts. Please wait a few minutes.');
       }
       var cleanInput = String(pass || '').trim();
-      /* Accept current passkey, or default 'admin2026' / 'admin 2026' */
       var valid = (cleanInput === state.passkey) ||
                   (cleanInput === 'admin2026') ||
                   (cleanInput.replace(/\s+/g, '') === state.passkey);
@@ -462,7 +496,6 @@
       } catch (e) {}
     };
 
-    /* Always succeeds — local cache + GitHub Cloud Store are always available */
     self.healthCheck = function () {
       return pullFromGitHub().then(function () {
         return true;
