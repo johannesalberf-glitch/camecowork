@@ -267,8 +267,71 @@
     return origin + path;
   };
 
-  U.buildVerifyLink = function (otp) {
-    return U.verificationBaseUrl() + '?code=' + encodeURIComponent(otp);
+  /* Encode/decode compact candidate card metadata in URL (?code=XXXXXX&c=...)
+   * so shared links verify instantaneously even when completely offline. */
+  U.encodeCandidateToken = function (c) {
+    if (!c || !c.otp) return '';
+    try {
+      var min = {
+        n: c.name || '',
+        p: c.passport || '',
+        r: c.role || '',
+        wn: c.work_name || '',
+        wt: c.work_type || '',
+        s: c.sex || '',
+        ph: c.phone || '',
+        id: c.employee_id || '',
+        is: c.issue_date || '',
+        ex: c.expiry_date || '',
+        st: c.status || 'active',
+        o: c.otp || '',
+        /* Only include photo_url in URL if it is a compact https URL, not a huge base64 data URI */
+        u: (c.photo_url && /^https:\/\//i.test(c.photo_url) && c.photo_url.length < 240) ? c.photo_url : ''
+      };
+      var json = JSON.stringify(min);
+      var b64 = window.btoa(unescape(encodeURIComponent(json)));
+      return b64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    } catch (e) { return ''; }
+  };
+
+  U.decodeCandidateToken = function (token) {
+    if (!token || typeof token !== 'string') return null;
+    try {
+      var b64 = token.replace(/-/g, '+').replace(/_/g, '/');
+      while (b64.length % 4) b64 += '=';
+      var json = decodeURIComponent(escape(window.atob(b64)));
+      var min = JSON.parse(json);
+      if (!min || !min.n || !min.o) return null;
+      return {
+        name: min.n,
+        passport: min.p || '',
+        role: min.r || '',
+        work_name: min.wn || min.r || '',
+        work_type: min.wt || '',
+        sex: min.s || '',
+        phone: min.ph || '',
+        employee_id: min.id || '',
+        issue_date: min.is || '',
+        expiry_date: min.ex || '',
+        status: min.st || 'active',
+        otp: String(min.o),
+        photo_url: min.u || ''
+      };
+    } catch (e) { return null; }
+  };
+
+  U.getLinkCandidate = function () {
+    var p = U.getLinkParams();
+    return p.c ? U.decodeCandidateToken(p.c) : null;
+  };
+
+  U.buildVerifyLink = function (otp, candidate) {
+    var url = U.verificationBaseUrl() + '?code=' + encodeURIComponent(otp);
+    if (candidate) {
+      var tok = U.encodeCandidateToken(candidate);
+      if (tok) url += '&c=' + encodeURIComponent(tok);
+    }
+    return url;
   };
 
   /* ---------------------------------------------------------------- images */

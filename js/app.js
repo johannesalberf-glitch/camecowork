@@ -58,17 +58,10 @@
   }
 
   function probeBackend() {
+    var bar = U.$('#cfg-banner');
+    if (bar) U.hide(bar);
     if (CCO.DB.mode !== 'cloud') return;
-    CCO.DB.healthCheck().then(function (ok) {
-      if (ok) return;
-      var bar = U.$('#cfg-banner');
-      if (!bar) return;
-      bar.innerHTML = '<strong>Verification service unreachable.</strong> We could not reach Supabase (' +
-        U.escapeHtml(CCO.DB.backend.health.detail || 'network error') +
-        '). Check your connection — the page will keep working once the service responds.' +
-        ' If this persists, confirm supabase/schema.sql was run and the keys in js/config.js are correct.';
-      U.show(bar);
-    });
+    CCO.DB.healthCheck();
   }
 
   /* -------------------------------------------------- discreet admin entry */

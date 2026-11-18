@@ -321,7 +321,7 @@
   }
 
   function copyLink(c) {
-    var link = U.buildVerifyLink(c.otp);
+    var link = U.buildVerifyLink(c.otp, c);
     U.copyText(link).then(function (ok) {
       if (ok) U.toast('Verification link copied — send it to ' + c.name + '.', 'success');
       else window.prompt('Copy this verification link:', link);
@@ -329,7 +329,7 @@
   }
 
   function shareLink(c) {
-    var link = U.buildVerifyLink(c.otp);
+    var link = U.buildVerifyLink(c.otp, c);
     if (navigator.share) {
       navigator.share({
         title: 'Cameco Careers — credential verification',

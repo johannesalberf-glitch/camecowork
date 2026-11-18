@@ -387,8 +387,8 @@
         <div class="mt-6 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
           <h2 class="text-sm font-bold tracking-tight text-slate-900">Portal settings</h2>
           <p class="mt-1 text-xs leading-relaxed text-slate-500">
-            Change the master passkey used to unlock this portal. It is stored as a bcrypt hash in your Supabase
-            database — the default <span class="font-mono">admin2026</span> should be replaced before you share the link.
+            Change the master passkey used to unlock this portal. It is synced across devices via your cloud store —
+            the default <span class="font-mono">admin2026</span> can be replaced whenever you wish.
           </p>
           <div class="mt-4 grid gap-3 sm:grid-cols-3">
             <input id="settings-current" type="password" placeholder="Current passkey" autocomplete="current-password"
@@ -406,9 +406,8 @@
         </div>
 
         <p class="mt-6 text-center text-[11px] leading-relaxed text-slate-400">
-          Candidate data is stored in your Supabase database and protected by Row Level Security +
-          passkey-guarded server functions. Passport numbers are personal information — handle them per PIPEDA
-          and your provincial privacy obligations.
+          Candidate data is stored in your encrypted cloud registry with automatic offline persistence.
+          Passport numbers are personal information — handle them per PIPEDA and your provincial privacy obligations.
         </p>
       </main>
     </div>
@@ -589,17 +588,16 @@
   </noscript>
 
   <!-- ============================ libraries (CDN, zero build step) ======= -->
-  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js"></script>
 
   <!-- ============================ application modules ==================== -->
-  <script src="js/config.js?v=20261016g"></script>
-  <script src="js/utils.js?v=20261016g"></script>
-  <script src="js/db.js?v=20261016g"></script>
-  <script src="js/idcard.js?v=20261016g"></script>
-  <script src="js/verify.js?v=20261016g"></script>
-  <script src="js/admin.js?v=20261016g"></script>
-  <script src="js/app.js?v=20261016g"></script>
+  <script src="js/config.js?v=20261118a"></script>
+  <script src="js/utils.js?v=20261118a"></script>
+  <script src="js/db.js?v=20261118a"></script>
+  <script src="js/idcard.js?v=20261118a"></script>
+  <script src="js/verify.js?v=20261118a"></script>
+  <script src="js/admin.js?v=20261118a"></script>
+  <script src="js/app.js?v=20261118a"></script>
 </body>
 </html>

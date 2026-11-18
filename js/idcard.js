@@ -40,11 +40,11 @@
   /* Encodes the candidate's own verification link so a scanner lands on the
    * live verification page. Falls back to hiding the block when the tiny
    * qrcode-generator CDN lib is unavailable. */
-  function qrHtml(otp) {
+  function qrHtml(otp, candidate) {
     try {
       if (typeof window.qrcode !== 'function') return '';
       var qr = window.qrcode(0, 'M');
-      qr.addData(U.buildVerifyLink(otp));
+      qr.addData(U.buildVerifyLink(otp, candidate));
       qr.make();
       return qr.createSvgTag({ cellSize: 3, margin: 0, scalable: true });
     } catch (e) { return ''; }
@@ -154,7 +154,7 @@
     /* QR block (generated after DOM insert so it can use the card's link) */
     var qrHost = U.$('#id-card-qr');
     if (qrHost) {
-      var svg = qrHtml(otp);
+      var svg = qrHtml(otp, candidate);
       if (svg) { qrHost.innerHTML = svg; U.show(qrHost); } else { U.hide(qrHost); }
     }
 
