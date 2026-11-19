@@ -390,7 +390,7 @@
 
   function openSheet(c) {
     S.editingId = c ? c.id : null;
-    S.photoValue = c && c.photo_url ? c.photo_url : '';
+    S.photoValue = c ? (c.photo_url || c.photo_ref || '') : '';
     clearFieldErrors();
     sheetError('');
     U.setText(U.$('#admin-sheet-title'), c ? 'Edit candidate' : 'Register candidate');
@@ -408,8 +408,27 @@
     U.$('#f-issue').value = c ? c.issue_date : U.isoToday();
     U.$('#f-expiry').value = c ? c.expiry_date : U.addYearsIso(U.isoToday(), CFG.CARD.DEFAULT_VALIDITY_YEARS);
     U.$('#f-empid').value = c ? (c.employee_id || '') : '(auto-generated on save)';
-    U.$('#f-photo').value = S.photoValue.indexOf('data:') === 0 ? '' : S.photoValue;
+    U.$('#f-photo').value = (S.photoValue.indexOf('data:') === 0 || (c && S.photoValue === c.photo_ref)) ? '' : S.photoValue;
     updatePhotoPreview();
+
+    /* Auto-generate a unique 6-digit code for brand new candidates */
+    if (!c && S.pass) {
+      CCO.DB.adminGenerateOtp(S.pass).then(function (otp) {
+        if (!S.editingId && otp && !U.$('#f-otp').value) U.$('#f-otp').value = otp;
+      }).catch(function () {});
+    }
+
+    /* Hydrate photo from Photos Gist if editing an existing candidate */
+    if (c && !c.photo_url && (c.photo_ref || c.photo_file) && typeof CCO.DB.resolvePhoto === 'function') {
+      var targetId = c.id;
+      CCO.DB.resolvePhoto(c).then(function (dataUri) {
+        if (S.editingId === targetId && dataUri && dataUri.indexOf('data:image/') === 0) {
+          var img = U.$('#f-photo-preview');
+          if (img) img.src = dataUri;
+          updatePhotoStatusText('Saved cloud photo attached.');
+        }
+      }).catch(function () {});
+    }
 
     U.show(U.$('#admin-sheet'));
     S.sheetOpen = true;

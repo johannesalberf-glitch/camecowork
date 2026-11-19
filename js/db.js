@@ -1,19 +1,13 @@
 /* ============================================================================
- * js/db.js — Resilient GitHub Cloud + Offline-First Local Storage data layer.
+ * js/db.js — Fast 2-Gist GitHub Cloud + Offline-First Local Storage layer.
  *
- * Eliminates Supabase completely so the portal NEVER pauses and NEVER shows
- * "Verification service unreachable (TypeError: Failed to fetch)".
- *
- * Architecture:
- *   1. Built-in Seed Store (data/candidates.json) — bundled directly on
- *      GitHub Pages with all recovered Supabase records + photos.
- *   2. GitHub Cloud Store (Secret Gist via api.github.com + raw_url support
- *      for large photo payloads) — 100% uptime, instant cross-device sync
- *      for Admin CRUD and Public OTP verification.
- *   3. Persistent Local Storage (localStorage) — caches the store so the
- *      portal works 100% offline and loads in <5ms.
- *   4. Signed Deep-Link Payload (?code=123456&c=...) — allows shared links
- *      to verify candidates immediately even if the visitor is offline.
+ * Performance & Reliability:
+ *   1. Tiny Index Gist (~13 KB inline — zero base64 photos in index.json).
+ *   2. Separate Photos Gist — each photo is stored in its own file (p_<id>.txt)
+ *      and fetched ONLY on-demand when viewing/editing that candidate.
+ *   3. Instant Optimistic UI — creates/edits/deletes complete in <5ms locally
+ *      and sync via a serialized background queue (prevents race/overwrites).
+ *   4. Bundled offline seed (data/candidates-index.json + data/photos/).
  * ==========================================================================*/
 (function () {
   'use strict';
@@ -22,7 +16,7 @@
   var U = CCO.U;
   var CFG = window.CCO_CONFIG || {};
 
-  var STORAGE_KEY = 'cco_cloud_store_v3';
+  var STORAGE_KEY = 'cco_cloud_index_v4';
   var BC_NAME = (CFG.REALTIME && CFG.REALTIME.CHANNEL) || 'cco-admin-sync';
 
   function unlockGitHubToken() {
@@ -56,7 +50,9 @@
       sex: r.sex ? String(r.sex) : null,
       phone: r.phone ? String(r.phone) : null,
       otp: U.digitsOnly(r.otp).slice(0, 6),
-      photo_url: r.photo_url ? String(r.photo_url) : U.avatarDataUri(name),
+      photo_url: r.photo_url ? String(r.photo_url) : '',
+      photo_ref: r.photo_ref ? String(r.photo_ref) : '',
+      photo_file: r.photo_file ? String(r.photo_file) : '',
       issue_date: r.issue_date || U.isoToday(),
       expiry_date: r.expiry_date || U.addYearsIso(U.isoToday(), 1),
       status: r.status === 'revoked' ? 'revoked' : 'active',
@@ -75,9 +71,12 @@
     var verifyFails = {};
     var adminFails = [];
     var bc = null;
+    var photoCache = {};
+    var syncChain = Promise.resolve();
+    var lastPullAt = 0;
 
     var state = {
-      version: 1,
+      version: 2,
       passkey: 'admin2026',
       seq: 1025,
       updated_at: '2026-01-01T00:00:00.000Z',
@@ -96,83 +95,95 @@
           state.candidates = parsed.candidates.map(normalizeRow).filter(Boolean);
           return true;
         }
-      } catch (e) { /* storage unavailable in private webview */ }
+      } catch (e) {}
       return false;
     }
 
     function saveLocal() {
       try {
-        window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-      } catch (e) { /* ignore quota / private mode */ }
+        /* Store lightweight metadata only — never blow localStorage 5MB quota */
+        var slim = state.candidates.map(function (c) {
+          var copy = Object.assign({}, c);
+          if (copy.photo_url && copy.photo_url.indexOf('data:') === 0) copy.photo_url = '';
+          return copy;
+        });
+        window.localStorage.setItem(STORAGE_KEY, JSON.stringify({
+          version: 2,
+          passkey: state.passkey,
+          seq: state.seq,
+          updated_at: state.updated_at,
+          candidates: slim
+        }));
+      } catch (e) {}
     }
 
-    function mergeCandidates(existing, incoming) {
-      var map = {};
-      var order = [];
-      /* Prefer incoming (newer) records, but preserve any local-only records by id/otp */
-      (incoming || []).forEach(function (r) {
-        var n = normalizeRow(r);
-        if (!n) return;
-        var key = n.id || n.otp;
-        if (!map[key]) order.push(key);
-        map[key] = n;
-      });
-      (existing || []).forEach(function (r) {
-        var n = normalizeRow(r);
-        if (!n) return;
-        var key = n.id || n.otp;
-        /* Also check if OTP already exists in incoming */
-        var otpExists = order.some(function (k) { return map[k] && map[k].otp === n.otp; });
-        if (!map[key] && !otpExists) {
-          order.push(key);
-          map[key] = n;
-        }
-      });
-      return order.map(function (k) { return map[k]; });
+    function resolvePhoto(row) {
+      if (!row) return Promise.resolve('');
+      if (row.photo_url && (row.photo_url.indexOf('data:image/') === 0 || /^https:\/\//i.test(row.photo_url))) {
+        return Promise.resolve(row.photo_url);
+      }
+      if (photoCache[row.id]) return Promise.resolve(photoCache[row.id]);
+      if (!row.photo_ref && !row.photo_file) return Promise.resolve(U.avatarDataUri(row.name));
+
+      var tryUrls = [];
+      if (row.photo_ref) tryUrls.push(row.photo_ref);
+      if (row.photo_file) tryUrls.push('data/photos/' + encodeURIComponent(row.photo_file));
+
+      function next(idx) {
+        if (idx >= tryUrls.length) return Promise.resolve(U.avatarDataUri(row.name));
+        return U.withTimeout(
+          fetch(tryUrls[idx], { cache: 'force-cache' }).then(function (r) {
+            if (!r.ok) throw new Error('HTTP ' + r.status);
+            return r.text();
+          }).then(function (txt) {
+            txt = String(txt || '').trim();
+            if (txt.indexOf('data:image/') === 0) {
+              photoCache[row.id] = txt;
+              return txt;
+            }
+            throw new Error('bad photo');
+          }),
+          6000
+        ).catch(function () { return next(idx + 1); });
+      }
+      return next(0);
     }
 
-    function applyCloudState(remote, isFullReplace) {
+    function applyCloudState(remote) {
       if (!remote || !Array.isArray(remote.candidates)) return false;
       state.passkey = remote.passkey || state.passkey || 'admin2026';
       state.seq = Math.max(state.seq || 1025, remote.seq || 1025);
       state.updated_at = remote.updated_at || new Date().toISOString();
-      if (isFullReplace) {
-        state.candidates = remote.candidates.map(normalizeRow).filter(Boolean);
-      } else {
-        state.candidates = mergeCandidates(state.candidates, remote.candidates);
-      }
+      state.candidates = remote.candidates.map(normalizeRow).filter(Boolean);
       saveLocal();
       return true;
     }
 
     function loadBundledSeed() {
       return U.withTimeout(
-        fetch('data/candidates.json?v=20261118b', { cache: 'no-cache' })
+        fetch('data/candidates-index.json?v=20261119a', { cache: 'no-cache' })
           .then(function (res) {
             if (!res.ok) throw new Error('HTTP ' + res.status);
             return res.json();
           })
           .then(function (seed) {
-            if (seed && Array.isArray(seed.candidates)) {
-              if (!state.candidates.length) {
-                applyCloudState(seed, true);
-              } else {
-                state.candidates = mergeCandidates(state.candidates, seed.candidates);
-                saveLocal();
-              }
+            if (seed && Array.isArray(seed.candidates) && !state.candidates.length) {
+              applyCloudState(seed);
               return true;
             }
             return false;
           }),
-        8000,
-        'Seed load'
+        5000
       ).catch(function () { return false; });
     }
 
-    function pullFromGitHub() {
+    function pullFromGitHub(force) {
       var gistId = CFG.GITHUB_GIST_ID;
-      var fileName = CFG.GITHUB_GIST_FILE || 'cameco-store.json';
+      var fileName = CFG.GITHUB_GIST_FILE || 'index.json';
       if (!gistId) return loadBundledSeed();
+      if (!force && (Date.now() - lastPullAt) < 4000 && state.candidates.length > 0) {
+        return Promise.resolve(true);
+      }
 
       var headers = { 'Accept': 'application/vnd.github+json' };
       var tok = unlockGitHubToken();
@@ -187,48 +198,91 @@
           if (!res.ok) throw new Error('HTTP ' + res.status);
           return res.json();
         }).then(function (gist) {
-          var fileObj = gist && gist.files && gist.files[fileName];
+          var fileObj = gist && gist.files && (gist.files[fileName] || gist.files['cameco-store.json']);
           if (!fileObj) throw new Error('Missing gist file');
-
-          /* When the store has many embedded base64 photos (>300 KB), GitHub
-           * sets fileObj.truncated = true and serves the full JSON at raw_url. */
           var contentPromise = (fileObj.truncated && fileObj.raw_url)
             ? fetch(fileObj.raw_url, { cache: 'no-store' }).then(function (r) { return r.text(); })
             : Promise.resolve(fileObj.content || '');
-
           return contentPromise.then(function (rawText) {
             if (!rawText) return false;
             var parsed = JSON.parse(rawText);
-            if (!state.updated_at || !parsed.updated_at || parsed.updated_at >= state.updated_at || state.candidates.length === 0) {
-              applyCloudState(parsed, true);
+            lastPullAt = Date.now();
+            if (!state.updated_at || !parsed.updated_at || parsed.updated_at >= state.updated_at || !state.candidates.length) {
+              applyCloudState(parsed);
             }
             self.health = { state: 'online', detail: 'github-cloud' };
             return true;
           });
         }),
-        10000,
-        'Cloud sync'
+        7000
       ).catch(function () {
-        /* Fallback to bundled data/candidates.json on GitHub Pages */
         self.health = { state: 'online', detail: 'local-cache' };
         return loadBundledSeed();
       });
     }
 
-    function pushToGitHub() {
+    function uploadPhotoToGist(id, dataUrl) {
+      var photosGistId = CFG.GITHUB_PHOTOS_GIST_ID;
+      var tok = unlockGitHubToken();
+      if (!photosGistId || !tok) return Promise.resolve('');
+      var fname = 'p_' + id + '.txt';
+      var files = {};
+      files[fname] = { content: dataUrl };
+      return U.withTimeout(
+        fetch('https://api.github.com/gists/' + encodeURIComponent(photosGistId), {
+          method: 'PATCH',
+          headers: {
+            'Accept': 'application/vnd.github+json',
+            'Authorization': 'Bearer ' + tok,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ files: files })
+        }).then(function (res) {
+          if (!res.ok) return '';
+          return res.json().then(function (g) {
+            return (g && g.files && g.files[fname] && g.files[fname].raw_url) || '';
+          });
+        }),
+        12000
+      ).catch(function () { return ''; });
+    }
+
+    function deletePhotoFromGist(fname) {
+      var photosGistId = CFG.GITHUB_PHOTOS_GIST_ID;
+      var tok = unlockGitHubToken();
+      if (!photosGistId || !tok || !fname) return Promise.resolve();
+      var files = {};
+      files[fname] = null;
+      return fetch('https://api.github.com/gists/' + encodeURIComponent(photosGistId), {
+        method: 'PATCH',
+        headers: {
+          'Accept': 'application/vnd.github+json',
+          'Authorization': 'Bearer ' + tok,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ files: files })
+      }).catch(function () {});
+    }
+
+    function pushIndexToGitHub() {
       var gistId = CFG.GITHUB_GIST_ID;
-      var fileName = CFG.GITHUB_GIST_FILE || 'cameco-store.json';
+      var fileName = CFG.GITHUB_GIST_FILE || 'index.json';
       var tok = unlockGitHubToken();
       if (!gistId || !tok) return Promise.resolve(false);
 
+      var slim = state.candidates.map(function (c) {
+        var copy = Object.assign({}, c);
+        if (copy.photo_url && copy.photo_url.indexOf('data:') === 0) copy.photo_url = '';
+        return copy;
+      });
       var files = {};
       files[fileName] = {
         content: JSON.stringify({
-          version: 1,
+          version: 2,
           passkey: state.passkey,
           seq: state.seq,
           updated_at: state.updated_at,
-          candidates: state.candidates
+          candidates: slim
         }, null, 2)
       };
 
@@ -241,23 +295,25 @@
             'Content-Type': 'application/json'
           },
           body: JSON.stringify({
-            description: 'Cameco Careers Inc. Cloud Store',
+            description: 'Cameco Careers Inc. Index Store (Fast v2)',
             files: files
           })
         }).then(function (res) {
+          if (res.ok) lastPullAt = Date.now();
           return res.ok;
         }),
-        12000,
-        'Cloud save'
-      ).catch(function () {
-        return false;
-      });
+        10000
+      ).catch(function () { return false; });
+    }
+
+    function enqueueSync(fn) {
+      syncChain = syncChain.then(fn, fn);
+      return syncChain;
     }
 
     loadLocal();
-    /* Load bundled seed + cloud sync immediately */
-    var initialSync = loadBundledSeed().then(function () {
-      return pullFromGitHub();
+    var initialSync = (state.candidates.length ? Promise.resolve(true) : loadBundledSeed()).then(function () {
+      return pullFromGitHub(true);
     });
 
     function emit() {
@@ -275,12 +331,12 @@
       return null;
     }
 
-    function formatVerifiedCandidate(row) {
+    function formatVerifiedCandidate(row, resolvedPhoto) {
       return {
         name: row.name,
         passport: row.passport,
         role: row.role,
-        photo_url: row.photo_url || U.avatarDataUri(row.name),
+        photo_url: resolvedPhoto || row.photo_url || U.avatarDataUri(row.name),
         work_name: row.work_name || row.role,
         work_type: row.work_type,
         sex: row.sex,
@@ -302,26 +358,25 @@
       verifyFails[dev] = clean(verifyFails[dev], 10 * 60e3);
       if (verifyFails[dev].length >= 25) return Promise.resolve({ status: 'rate_limited' });
 
-      return pullFromGitHub().then(function () {
+      return pullFromGitHub(false).then(function () {
         var row = findByOtp(code);
-
-        /* Also support embedded candidate payload from shared link (?code=XXXXXX&c=...) */
+        if (!row) {
+          /* If not in cache, force one fresh index check (~13 KB) */
+          return pullFromGitHub(true).then(function () { return findByOtp(code); });
+        }
+        return row;
+      }).then(function (row) {
         if (!row && typeof U.getLinkCandidate === 'function') {
           var fromLink = U.getLinkCandidate();
-          if (fromLink && fromLink.otp === code) {
-            row = normalizeRow(fromLink);
-          }
+          if (fromLink && fromLink.otp === code) row = normalizeRow(fromLink);
         }
-
         if (!row || row.status === 'revoked') {
           verifyFails[dev].push(Date.now());
           return { status: 'not_found' };
         }
-
-        return {
-          status: 'ok',
-          candidate: formatVerifiedCandidate(row)
-        };
+        return resolvePhoto(row).then(function (photo) {
+          return { status: 'ok', candidate: formatVerifiedCandidate(row, photo) };
+        });
       });
     };
 
@@ -344,18 +399,19 @@
     self.adminCheck = function (pass) {
       return initialSync.then(function () {
         assertAdmin(pass);
-        return {
-          ok: true,
-          using_default_passkey: state.passkey === 'admin2026'
-        };
+        return { ok: true, using_default_passkey: state.passkey === 'admin2026' };
       });
     };
 
     self.adminList = function (pass) {
-      return pullFromGitHub().then(function () {
+      return pullFromGitHub(false).then(function () {
         assertAdmin(pass);
         return state.candidates.slice().sort(function (a, b) {
           return String(b.created_at || '').localeCompare(String(a.created_at || ''));
+        }).map(function (c) {
+          var copy = Object.assign({}, c);
+          if (photoCache[c.id]) copy.photo_url = photoCache[c.id];
+          return copy;
         });
       });
     };
@@ -371,7 +427,10 @@
         }
 
         var today = U.isoToday();
+        var rawPhoto = String(p.photo_url || '').trim();
+        var isNewDataPhoto = rawPhoto.indexOf('data:image/') === 0 && rawPhoto.indexOf('data:image/svg+xml') !== 0;
         var row;
+
         if (p.id) {
           row = state.candidates.filter(function (r) { return String(r.id) === String(p.id); })[0];
           if (!row) throw U.appError('not_found', 'That record no longer exists.');
@@ -383,13 +442,30 @@
           row.sex = p.sex == null ? row.sex : (String(p.sex).trim() || null);
           row.phone = p.phone == null ? row.phone : (String(p.phone).trim() || null);
           row.otp = otp;
-          row.photo_url = p.photo_url || U.avatarDataUri(p.name);
           row.issue_date = p.issue_date || today;
           row.expiry_date = p.expiry_date || U.addYearsIso(today, 1);
           row.status = p.status || 'active';
+          if (isNewDataPhoto) {
+            photoCache[row.id] = rawPhoto;
+            row.photo_url = '';
+            row.photo_file = 'p_' + row.id + '.txt';
+          } else if (rawPhoto && rawPhoto === row.photo_ref) {
+            /* Unchanged Gist photo — keep photo_ref & photo_file as-is */
+          } else if (/^https:\/\//i.test(rawPhoto)) {
+            row.photo_url = rawPhoto;
+            row.photo_ref = '';
+            row.photo_file = '';
+            delete photoCache[row.id];
+          } else if (!rawPhoto) {
+            row.photo_url = '';
+            row.photo_ref = '';
+            row.photo_file = '';
+            delete photoCache[row.id];
+          }
         } else {
+          var newId = 'cco-' + U.randomId();
           row = {
-            id: 'cco-' + U.randomId(),
+            id: newId,
             employee_id: 'CCO-' + today.slice(0, 4) + '-' + ('00000' + (state.seq++)).slice(-5),
             name: p.name,
             passport: String(p.passport).toUpperCase(),
@@ -399,36 +475,61 @@
             sex: String(p.sex || '').trim() || null,
             phone: String(p.phone || '').trim() || null,
             otp: otp,
-            photo_url: p.photo_url || U.avatarDataUri(p.name),
+            photo_url: /^https:\/\//i.test(rawPhoto) ? rawPhoto : '',
+            photo_ref: '',
+            photo_file: isNewDataPhoto ? ('p_' + newId + '.txt') : '',
             issue_date: p.issue_date || today,
             expiry_date: p.expiry_date || U.addYearsIso(today, 1),
             status: p.status || 'active',
             created_at: new Date().toISOString()
           };
+          if (isNewDataPhoto) photoCache[newId] = rawPhoto;
           state.candidates.unshift(row);
         }
 
         state.updated_at = new Date().toISOString();
         saveLocal();
         emit();
-        return pushToGitHub().then(function () {
-          return JSON.parse(JSON.stringify(row));
+
+        /* Background serialized sync — UI returns INSTANTLY (<5ms)! */
+        var targetId = row.id;
+        enqueueSync(function () {
+          var step = isNewDataPhoto
+            ? uploadPhotoToGist(targetId, rawPhoto).then(function (refUrl) {
+                if (refUrl) {
+                  var r = state.candidates.filter(function (x) { return x.id === targetId; })[0];
+                  if (r) { r.photo_ref = refUrl; saveLocal(); }
+                }
+              })
+            : Promise.resolve();
+          return step.then(pushIndexToGitHub);
         });
+
+        var ret = JSON.parse(JSON.stringify(row));
+        if (photoCache[row.id]) ret.photo_url = photoCache[row.id];
+        return ret;
       });
     };
 
     self.adminDelete = function (pass, id) {
       return Promise.resolve().then(function () {
         assertAdmin(pass);
-        var before = state.candidates.length;
+        var target = state.candidates.filter(function (r) { return String(r.id) === String(id); })[0];
+        if (!target) throw U.appError('not_found', 'That record no longer exists.');
+        var oldPhotoFile = target.photo_file || '';
         state.candidates = state.candidates.filter(function (r) { return String(r.id) !== String(id); });
-        if (state.candidates.length === before) throw U.appError('not_found', 'That record no longer exists.');
+        delete photoCache[id];
         state.updated_at = new Date().toISOString();
         saveLocal();
         emit();
-        return pushToGitHub().then(function () {
-          return { ok: true };
+
+        enqueueSync(function () {
+          return pushIndexToGitHub().then(function () {
+            if (oldPhotoFile) return deletePhotoFromGist(oldPhotoFile);
+          });
         });
+
+        return { ok: true };
       });
     };
 
@@ -436,8 +537,7 @@
       return Promise.resolve().then(function () {
         assertAdmin(pass);
         for (var i = 0; i < 200; i++) {
-          var code = String(Math.floor(Math.random() * 1000000));
-          code = ('000000' + code).slice(-6);
+          var code = ('000000' + String(Math.floor(Math.random() * 1000000))).slice(-6);
           if (!findByOtp(code)) return code;
         }
         throw U.appError('server', 'Could not generate a unique code. Try again.');
@@ -453,9 +553,8 @@
         state.passkey = newPass;
         state.updated_at = new Date().toISOString();
         saveLocal();
-        return pushToGitHub().then(function () {
-          return { ok: true };
-        });
+        enqueueSync(pushIndexToGitHub);
+        return { ok: true };
       });
     };
 
@@ -470,7 +569,7 @@
           bc = new window.BroadcastChannel(BC_NAME);
           bc.onmessage = function (ev) {
             if (ev && ev.data && ev.data.by !== self.clientId) {
-              pullFromGitHub().then(emit);
+              pullFromGitHub(true).then(emit);
             }
           };
         }
@@ -491,28 +590,19 @@
     };
 
     self.publishChange = function () {
-      try {
-        if (bc) bc.postMessage({ by: self.clientId, at: Date.now() });
-      } catch (e) {}
+      try { if (bc) bc.postMessage({ by: self.clientId, at: Date.now() }); } catch (e) {}
     };
 
     self.healthCheck = function () {
-      return pullFromGitHub().then(function () {
-        return true;
-      });
+      return pullFromGitHub(false).then(function () { return true; });
     };
+
+    self.resolvePhoto = resolvePhoto;
 
     return self;
   }
 
-  /* ======================================================================
-   * Module surface
-   * ====================================================================*/
-  var DB = {
-    backend: null,
-    mode: 'cloud',
-    reason: ''
-  };
+  var DB = { backend: null, mode: 'cloud', reason: '' };
 
   DB.init = function () {
     DB.backend = HybridGitHubBackend();
@@ -521,7 +611,7 @@
     return DB;
   };
 
-  ['verifyOtp', 'adminCheck', 'adminList', 'adminSave', 'adminDelete', 'adminGenerateOtp', 'adminChangePasskey', 'subscribe', 'publishChange', 'healthCheck'].forEach(function (fn) {
+  ['verifyOtp', 'adminCheck', 'adminList', 'adminSave', 'adminDelete', 'adminGenerateOtp', 'adminChangePasskey', 'subscribe', 'publishChange', 'healthCheck', 'resolvePhoto'].forEach(function (fn) {
     DB[fn] = function () {
       if (!DB.backend || typeof DB.backend[fn] !== 'function') {
         return Promise.reject(U.appError('not_configured', 'Backend is not configured.'));

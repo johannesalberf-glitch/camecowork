@@ -2,8 +2,8 @@
  * Cameco Careers Inc. — Verification Portal
  * js/config.js — single place where deployments are configured.
  *
- * Powered by GitHub Cloud Store (Gist + LocalStorage + Signed Deep Links)
- * for 100% uptime with zero Supabase dependencies or database pausing.
+ * Powered by Fast 2-Gist GitHub Cloud Store (13 KB Index + Separate Photos)
+ * + Offline-First LocalStorage + Signed Deep Links.
  * ==========================================================================*/
 (function () {
   'use strict';
@@ -11,7 +11,8 @@
   window.CCO_CONFIG = {
     /* ---------- GitHub Cloud Store (100% uptime, never pauses) ---------- */
     GITHUB_GIST_ID: '858e02e99230dd8d676da1a1ebfe1d17',
-    GITHUB_GIST_FILE: 'cameco-store.json',
+    GITHUB_GIST_FILE: 'index.json',
+    GITHUB_PHOTOS_GIST_ID: 'd66332f4ef1c513b605ca734c7f4e14c',
     /* XOR-encrypted GitHub token unlocked with the admin passkey */
     GITHUB_SYNC_VAULT: 'BgwCNl1GUkNvOwY4CFl9RlRMV10vLQp1BGVGMAw1GSFcBQJSBCAJXQ==',
     GITHUB_VAULT_KEY: 'admin2026',
@@ -38,7 +39,7 @@
     CARD: {
       DEFAULT_VALIDITY_YEARS: 1,
       SHOW_LEGAL_DISCLAIMER: true,
-      MAX_EMBEDDED_PHOTO_BYTES: 400 * 1024
+      MAX_EMBEDDED_PHOTO_BYTES: 180 * 1024
     },
 
     /* ---------- Realtime admin sync ---------- */
